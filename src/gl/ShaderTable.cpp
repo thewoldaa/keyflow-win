@@ -938,6 +938,11 @@ vec3 setSat(vec3 c, float s) {
 }
 
 vec3 blendColor(vec3 b, vec3 s) {
+    // Normal is the source unchanged. It needs its own branch: without one the
+    // dispatch falls through to the final return, which is Luminosity — so a
+    // layer set to Normal would composite its brightness from itself and its
+    // colour from the backdrop.
+    if (uMode == 0) return s;
     if (uMode == 1) return min(b, s);                                              // Darken
     if (uMode == 2) return b * s;                                                  // Multiply
     if (uMode == 3) return 1.0 - min(vec3(1.0), (1.0 - b) / max(s, vec3(1e-4)));   // Color Burn

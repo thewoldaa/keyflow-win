@@ -5,6 +5,7 @@
 #include "gl/ShaderTable.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <sstream>
@@ -598,6 +599,15 @@ void Renderer::setUniform(unsigned int program, const std::string& name, double 
     if (location >= 0) gl.Uniform1f(location, static_cast<GLfloat>(value));
 }
 
+void Renderer::setUniformInt(unsigned int program, const std::string& name, int value)
+{
+    // A float write to an integer uniform is an error the driver swallows:
+    // the uniform keeps its default of zero and the shader takes a branch
+    // nobody asked for. Every integer uniform goes through here.
+    const GLint location = gl.GetUniformLocation(program, name.c_str());
+    if (location >= 0) gl.Uniform1i(location, static_cast<GLint>(value));
+}
+
 void Renderer::setUniform(unsigned int program, const std::string& name, float x, float y)
 {
     const GLint location = gl.GetUniformLocation(program, name.c_str());
@@ -678,16 +688,104 @@ void Renderer::releaseResources()
     }
     _targetPool.clear();
 
-    for (const Target& target : {_frame, _scratchA, _scratchB, _previous}) {
+    for (const Target& target : {_frame, _composite, _scratchA, _scratchB, _previous}) {
         if (target.framebuffer) gl.DeleteFramebuffers(1, &target.framebuffer);
         if (target.texture) gl.DeleteTextures(1, &target.texture);
     }
-    _frame = _scratchA = _scratchB = _previous = Target{};
+    _frame = _composite = _scratchA = _scratchB = _previous = Target{};
 
     for (const TextureId texture : _texturePool) {
         gl.DeleteTextures(1, &texture);
     }
     _texturePool.clear();
+}
+
+bool Renderer::checkBlendModes(std::string& error)
+{
+    // A 32x32 composition: a red backdrop with one green layer over it.
+    //
+    // Normal must give green, Multiply black (red x green), Screen yellow
+    // (red + green). Three modes with three distinct answers, so a blend that
+    // is not being applied at all cannot pass by coincidence — which is what
+    // the previous check, comparing only Normal, would have done.
+    Project project = Project::createDefault("Blend check");
+    Composition& comp = project.compositions.front();
+    comp.width = 32;
+    comp.height = 32;
+    comp.backgroundR = 1.0;
+    comp.backgroundG = 0.0;
+    comp.backgroundB = 0.0;
+    comp.backgroundA = 1.0;
+
+    Layer top;
+    top.id = "blend-top";
+    top.name = "Top";
+    top.kind = LayerKind::Solid;
+    top.solidR = 0.0;
+    top.solidG = 1.0;
+    top.solidB = 0.0;
+    top.solidA = 1.0;
+    top.outPoint = comp.duration;
+    top.blendStrength = 1.0;
+    comp.layers.push_back(top);
+
+    RenderSettings settings;
+    settings.width = 32;
+    settings.height = 32;
+    settings.time = 0.0;
+
+    std::vector<Frame> noFrames(comp.layers.size());
+
+    struct Expectation
+    {
+        BlendMode mode;
+        const char* name;
+        int r;
+        int g;
+        int b;
+    };
+    const Expectation expectations[] = {
+        {BlendMode::Normal, "Normal", 0, 255, 0},
+        {BlendMode::Multiply, "Multiply", 0, 0, 0},
+        {BlendMode::Screen, "Screen", 255, 255, 0},
+    };
+
+    for (const Expectation& expected : expectations) {
+        comp.layers[0].blend = expected.mode;
+
+        if (!renderFrame(comp, settings, noFrames, error)) {
+            error = std::string(expected.name) + ": " + error;
+            return false;
+        }
+
+        Frame read;
+        if (!readback(read, error)) {
+            error = std::string(expected.name) + ": " + error;
+            return false;
+        }
+
+        const std::size_t mid =
+            (static_cast<std::size_t>(read.height / 2) * read.width + read.width / 2) * 4;
+        const int r = read.pixels[mid];
+        const int g = read.pixels[mid + 1];
+        const int b = read.pixels[mid + 2];
+
+        // A tolerance of 8. The maths is exact for these values, but a driver
+        // is free to round slightly differently on the way out.
+        const bool ok = std::abs(r - expected.r) <= 8
+                     && std::abs(g - expected.g) <= 8
+                     && std::abs(b - expected.b) <= 8;
+        if (!ok) {
+            error = std::string(expected.name) + " over red gave rgb "
+                  + std::to_string(r) + " " + std::to_string(g) + " "
+                  + std::to_string(b) + ", expected "
+                  + std::to_string(expected.r) + " " + std::to_string(expected.g)
+                  + " " + std::to_string(expected.b);
+            return false;
+        }
+    }
+
+    return true;
 }
 
 std::vector<std::string> Renderer::validateShaders(std::string& firstError)
@@ -783,19 +881,23 @@ bool Renderer::applyEffect(const Effect& effect, const EffectSpec& spec,
     gl.UseProgram(program);
 
     // --- the samplers every effect pass gets -----------------------------
+    // A sampler uniform names a texture unit, so it is an integer. Setting it
+    // with glUniform1f is an error the driver swallows, leaving the sampler at
+    // unit 0 — which is where uTexture already is, so the shader would read
+    // the layer where it meant to read the backdrop.
     gl.ActiveTexture(GL_TEXTURE0);
     gl.BindTexture(GL_TEXTURE_2D, source);
-    setUniform(program, "uTexture", 0.0);
+    setUniformInt(program, "uTexture", 0);
 
     if (backdrop != 0) {
         gl.ActiveTexture(GL_TEXTURE0 + 1);
         gl.BindTexture(GL_TEXTURE_2D, backdrop);
-        setUniform(program, "uBackdrop", 1.0);
+        setUniformInt(program, "uBackdrop", 1);
     }
     if (previousFrame != 0) {
         gl.ActiveTexture(GL_TEXTURE0 + 2);
         gl.BindTexture(GL_TEXTURE_2D, previousFrame);
-        setUniform(program, "uPrev", 2.0);
+        setUniformInt(program, "uPrev", 2);
     }
 
     // --- the frame constants ---------------------------------------------
@@ -833,9 +935,9 @@ bool Renderer::applyEffect(const Effect& effect, const EffectSpec& spec,
     // --- what the compositor needs ---------------------------------------
     setUniform(program, "uAlpha", layer.blendStrength);
     setUniform(program, "uStrength", layer.blendStrength);
-    setUniform(program, "uMode", static_cast<double>(layer.blend));
+    setUniformInt(program, "uMode", static_cast<int>(layer.blend));
     setUniform(program, "uTime", settings.time);
-    setUniform(program, "uPass", 0.0);
+    setUniformInt(program, "uPass", 0);
     setUniform(program, "uHeadroom", 1.0);
 
     drawFullscreenQuad();
@@ -849,34 +951,65 @@ bool Renderer::compositeLayer(TextureId layerTexture, const Layer& layer,
                               const Composition& comp, const RenderSettings& settings,
                               int targetWidth, int targetHeight, std::string& error)
 {
+    (void)comp;
+
     const unsigned int program = programFor("compositor_blend", error);
     if (program == 0) return false;
 
-    gl.BindFramebuffer(GL_FRAMEBUFFER, _frame.framebuffer);
+    // The composite reads the frame as its backdrop and writes a new frame, so
+    // the read and the write must be different textures.
+    //
+    // Binding the frame's own texture as uBackdrop while drawing into the
+    // framebuffer it is attached to is undefined — the driver returns a zero
+    // alpha for the self-read, the shader weights the blend at zero, and every
+    // layer composites as a plain source-over. The blend modes then look like
+    // "the colours are wrong" rather than like a missing feature.
+    if (_composite.width != targetWidth || _composite.height != targetHeight) {
+        _composite = acquireTarget(targetWidth, targetHeight);
+    }
+    if (_composite.framebuffer == 0) {
+        error = "the renderer could not create its composite target";
+        return false;
+    }
+
+    gl.BindFramebuffer(GL_FRAMEBUFFER, _composite.framebuffer);
     gl.Viewport(0, 0, targetWidth, targetHeight);
     gl.Disable(GL_BLEND); // the shader does the blend itself
     gl.UseProgram(program);
 
     gl.ActiveTexture(GL_TEXTURE0);
     gl.BindTexture(GL_TEXTURE_2D, layerTexture);
-    setUniform(program, "uTexture", 0.0);
+    setUniformInt(program, "uTexture", 0);
 
-    // The backdrop is the frame as it stands, read by gl_FragCoord, so it is
-    // bound to the same texture the pass is drawing into. That is legal
-    // because the shader reads it at a coordinate the fragment has not
-    // written yet, and it is what avoids a copy of the whole frame per layer.
     gl.ActiveTexture(GL_TEXTURE0 + 1);
     gl.BindTexture(GL_TEXTURE_2D, _frame.texture);
-    setUniform(program, "uBackdrop", 1.0);
+    setUniformInt(program, "uBackdrop", 1);
 
     setUniform(program, "uTargetSize", static_cast<float>(targetWidth),
                static_cast<float>(targetHeight));
     setUniform(program, "uAlpha", layer.opacity.evaluate(settings.time));
     setUniform(program, "uStrength", layer.blendStrength);
-    setUniform(program, "uMode", static_cast<double>(layer.blend));
+    setUniformInt(program, "uMode", static_cast<int>(layer.blend));
     setUniform(program, "uTexelSize", 1.0f / targetWidth, 1.0f / targetHeight);
 
+
     drawFullscreenQuad();
+
+    // Copy the result back into the frame. A plain texture copy, so the frame
+    // the next layer reads is the one this layer produced.
+    const unsigned int copy = programFor("tex_copy", error);
+    if (copy == 0) return false;
+
+    gl.BindFramebuffer(GL_FRAMEBUFFER, _frame.framebuffer);
+    gl.Viewport(0, 0, targetWidth, targetHeight);
+    gl.UseProgram(copy);
+
+    gl.ActiveTexture(GL_TEXTURE0);
+    gl.BindTexture(GL_TEXTURE_2D, _composite.texture);
+    setUniformInt(copy, "uTexture", 0);
+
+    drawFullscreenQuad();
+
     gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
     return true;
 }

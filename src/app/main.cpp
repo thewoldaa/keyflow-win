@@ -21,6 +21,7 @@
 #include <WebView2.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -985,7 +986,26 @@ int App::runSelfTest(const std::string& outputPath)
     // Report the corner pixel, so a caller can tell a rendered frame from a
     // black one without decoding the PNG.
     const std::size_t last = result.pixels.size() - 4;
-    logSelfTest("[self-test] frame written: " + outputPath + "[self-test] corner pixel rgba: " + std::to_string(result.pixels[last]).c_str() + " " + std::to_string(result.pixels[last + 1]).c_str() + " " + std::to_string(result.pixels[last + 2]).c_str());
+    // --- the blend modes ---------------------------------------------------
+    //
+    // A blend that is not applied at all renders every mode as a plain
+    // source-over, which looks like "the colours are wrong" rather than like a
+    // missing feature. The shader-compilation check cannot see it: the shader
+    // compiles either way.
+    {
+        std::string blendError;
+        if (!_renderer.checkBlendModes(blendError)) {
+            logSelfTest("[self-test] BLEND CHECK FAILED: " + blendError);
+            return 7;
+        }
+        logSelfTest("[self-test] blend modes: Normal, Multiply and Screen correct");
+    }
+
+    logSelfTest("[self-test] frame written: " + outputPath);
+    logSelfTest("[self-test] corner pixel rgba: "
+                + std::to_string(result.pixels[last]) + " "
+                + std::to_string(result.pixels[last + 1]) + " "
+                + std::to_string(result.pixels[last + 2]));
 
     return failedShaders.empty() ? 0 : 1;
 }

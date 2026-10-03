@@ -126,6 +126,17 @@ public:
     /// Release every texture and target. Called when a project closes.
     void releaseResources();
 
+    /// Render a two-layer composition and report whether the blend modes
+    /// composite correctly.
+    ///
+    /// Returns false and fills `error` when a mode produces the wrong pixel.
+    /// The blend maths has three inputs that can each be wrong independently —
+    /// the mode uniform, the backdrop sampler, and the backdrop's own alpha —
+    /// and all three produce the same symptom: every mode rendering as a plain
+    /// source-over. Reading the result is the only check that covers all three,
+    /// which is how all three were found.
+    bool checkBlendModes(std::string& error);
+
     /// Compile every shader in the table and report what failed.
     ///
     /// Public because the only way to know a shader compiles is to hand it to
@@ -190,6 +201,14 @@ private:
     /// shader that does not read a parameter is not an error, it is a shader
     /// with fewer knobs than the spec offers.
     void setUniform(unsigned int program, const std::string& name, double value);
+
+    /// Set an integer uniform by name.
+    ///
+    /// Separate from the float overload because the two use different GL
+    /// calls, and passing a float to an integer uniform is an error the driver
+    /// swallows — the uniform keeps its default of zero and the shader takes a
+    /// branch nobody asked for.
+    void setUniformInt(unsigned int program, const std::string& name, int value);
     void setUniform(unsigned int program, const std::string& name, float x, float y);
     void setUniform(unsigned int program, const std::string& name,
                     float x, float y, float z, float w);
@@ -217,6 +236,16 @@ private:
 
     /// The frame being built.
     Target _frame;
+
+    /// Where a composite lands before it is copied back into the frame.
+    ///
+    /// A composite reads the frame as its backdrop and writes a new frame, so
+    /// the two cannot be the same texture: reading a texture attached to the
+    /// bound framebuffer is undefined, and the driver returns a zero alpha for
+    /// it. That zero is what made every blend mode silently composite as a
+    /// plain source-over.
+    Target _composite;
+
     Target _scratchA;
     Target _scratchB;
 
