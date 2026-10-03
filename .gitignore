@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# Build output.
+#
+# Never committed. A build directory carries absolute paths from the machine
+# that made it, so a checked-in one is worse than useless on another machine —
+# it configures and then fails in a way that looks like a source problem.
+# ---------------------------------------------------------------------------
+build/
+out/
+bin/
+lib/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.obj
+
+# ---------------------------------------------------------------------------
+# Third-party.
+#
+# The WebView2 SDK is fetched by scripts/fetch-deps.ps1 rather than vendored:
+# it is about 9 MB, it is not ours to license, and a fresh clone should not
+# carry it. Every worktree needs its own copy; run the script once per
+# worktree, or copy the directory across.
+# ---------------------------------------------------------------------------
+third_party/
+
+# ---------------------------------------------------------------------------
+# Editor and IDE state.
+# ---------------------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln
+CMakeUserPresets.json
+
+# ---------------------------------------------------------------------------
+# Runtime output.
+#
+# The app writes these beside the executable while it runs: the WebView2
+# profile, the self-test's frame and log, and the layout report. None of them
+# is source.
+# ---------------------------------------------------------------------------
+KeyflowData/
+self_test.png
+self_test.log
+layout_report.json
+*.kfproj
+
+# ---------------------------------------------------------------------------
+# Scratch.
+# ---------------------------------------------------------------------------
+*.tmp
+*.bak
+*~

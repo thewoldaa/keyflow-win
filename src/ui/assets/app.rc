@@ -1,0 +1,16 @@
+// ---------------------------------------------------------------------------
+// The application's resources.
+//
+// The HTML is RCDATA rather than a custom type: RCDATA is what FindResourceW
+// looks up by default, and a custom type would need its name spelled out in
+// two places for no gain.
+// ---------------------------------------------------------------------------
+
+#include "resource.h"
+
+// The interface. ui.html sits beside this file, which is why the build sets
+// VS_GLOBAL_ResourceIncludePath to this directory.
+IDR_UI_HTML RCDATA "ui.html"
+
+// The window and taskbar icon.
+IDI_APP ICON "app.ico"

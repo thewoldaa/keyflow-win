@@ -1,0 +1,2455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keyflow</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Keyflow's interface.
+
+   One file, no build step, no framework. The page is loaded from a resource
+   with NavigateToString, so an external stylesheet or script would have to be
+   inlined anyway — and a bundler for a single page would be more moving parts
+   than the page has.
+
+   The layout is the editor's own: a media bin and effect browser on the left,
+   the viewer in the middle, the inspector on the right, the timeline across
+   the bottom. That is the arrangement every compositor uses, and matching it
+   is what lets someone who knows one open this and work.
+--------------------------------------------------------------------------- */
+
+:root {
+    --bg:            #14161a;
+    --panel:         #1b1e24;
+    --panel-raised:  #22262e;
+    --border:        #2e333d;
+    --border-strong: #3d434f;
+    --text:          #dfe3ea;
+    --text-dim:      #8d95a5;
+    --text-faint:    #5d6472;
+    --accent:        #4c8dff;
+    --accent-dim:    #2f5ba8;
+    --accent-soft:   rgba(76, 141, 255, 0.15);
+    --warn:          #ffb454;
+    --error:         #ff6b6b;
+    --ok:            #5ed17c;
+    --track:         #0f1114;
+    --row:           26px;
+    --radius:        4px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.45 "Segoe UI", system-ui, sans-serif;
+    /* The editor is a tool, not a document: selecting its chrome while
+       dragging a slider is never what the user meant. */
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+/* --- shell ------------------------------------------------------------- */
+
+#shell {
+    display: grid;
+    grid-template-rows: 34px 1fr 22px;
+    grid-template-columns: 1fr;
+    height: 100%;
+}
+
+#titlebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+}
+
+#titlebar .name {
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    color: var(--accent);
+}
+
+#titlebar .project {
+    color: var(--text-dim);
+    margin-left: 4px;
+}
+
+#titlebar .dirty { color: var(--warn); }
+
+#titlebar .spacer { flex: 1; }
+
+#main {
+    display: grid;
+    grid-template-columns: 232px 1fr 268px;
+    /* The row must be minmax(0, 1fr), not the default auto. An auto row sizes
+       to its content, so the viewer plus the timeline's fixed height grows the
+       row past the shell's 1fr allotment and pushes the timeline and the
+       status bar off the bottom of the window. minmax(0, 1fr) lets the row
+       shrink to the space that exists, which is what min-height: 0 on the
+       items then lets their own children scroll inside. */
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+}
+
+#statusbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 10px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
+#statusbar .spacer { flex: 1; }
+#statusbar .error { color: var(--error); }
+#statusbar .ok { color: var(--ok); }
+
+/* --- panels ------------------------------------------------------------ */
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+}
+.panel:last-child { border-right: none; border-left: 1px solid var(--border); }
+
+.panel-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 8px;
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    flex: none;
+}
+
+.panel-body {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* --- tabs -------------------------------------------------------------- */
+
+.tabs {
+    display: flex;
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+    flex: none;
+}
+
+.tab {
+    flex: 1;
+    padding: 6px 4px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.tab:hover { color: var(--text); }
+.tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: var(--panel);
+}
+
+/* --- rows -------------------------------------------------------------- */
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: var(--row);
+    padding: 0 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    white-space: nowrap;
+}
+
+.row:hover { background: rgba(255,255,255,0.03); }
+.row.selected {
+    background: var(--accent-soft);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.row .kind {
+    color: var(--text-faint);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.row .toggle {
+    width: 16px;
+    text-align: center;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    padding: 0;
+}
+.row .toggle:hover { color: var(--text); }
+.row .toggle.on { color: var(--accent); }
+
+.draggable { cursor: grab; }
+.dragging { opacity: 0.4; }
+.drop-above { box-shadow: inset 0 2px 0 var(--accent); }
+.drop-below { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* --- buttons ----------------------------------------------------------- */
+
+.btn {
+    padding: 3px 9px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    color: var(--text);
+}
+.btn:hover { background: #2a2f39; border-color: #4a5160; }
+.btn:active { background: #1d2129; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn.primary {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: #fff;
+}
+.btn.primary:hover { background: var(--accent); }
+.btn.icon {
+    width: 24px;
+    padding: 3px 0;
+    text-align: center;
+}
+.btn.small { padding: 1px 6px; font-size: 11px; }
+
+.btn-group { display: flex; gap: 4px; }
+
+/* --- viewer ------------------------------------------------------------ */
+
+#viewer-panel {
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    /* The viewer takes whatever the timeline does not. Without an explicit
+       row template the panel's own grid would give both rows equal share. */
+    display: grid;
+    grid-template-rows: 26px minmax(0, 1fr) 30px 168px;
+    min-height: 0;
+}
+
+#viewer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* min-height: 0 is load-bearing. A grid item defaults to min-height: auto,
+       which refuses to shrink below its content — and the content here is a
+       canvas with intrinsic 720px height, so the row grows to fit it and
+       pushes the transport and the timeline off the bottom of the window.
+       Zero lets the row take only the space the shell gives it, and the canvas
+       then scales down to fit. */
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+    padding: 12px;
+    background:
+        repeating-conic-gradient(#1a1c21 0% 25%, #16181c 0% 50%) 50% / 20px 20px;
+}
+
+#canvas-wrap {
+    position: relative;
+    /* Same trap as #viewer: a flex item will not shrink below its content, and
+       the content is a canvas with an intrinsic 1280x720 size. Without these
+       the wrap holds the viewer open at 720px no matter how short the window
+       is, and the timeline goes off the bottom. */
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+
+#view {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    background: #000;
+}
+
+#view-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+/* --- transport --------------------------------------------------------- */
+
+#transport {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 10px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    flex: none;
+}
+
+#transport .time {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    min-width: 118px;
+}
+
+#transport input[type=range] { flex: 1; }
+
+/* --- range inputs ------------------------------------------------------ */
+
+input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border-strong);
+    border-radius: 2px;
+    outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+}
+input[type=range]:disabled::-webkit-slider-thumb { background: var(--text-faint); }
+
+input[type=number], input[type=text] {
+    background: var(--track);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 2px 5px;
+    color: var(--text);
+    min-width: 0;
+}
+input[type=number] { width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+select {
+    background: var(--track);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 2px 4px;
+    color: var(--text);
+    width: 100%;
+}
+
+input[type=checkbox] { accent-color: var(--accent); }
+
+/* --- timeline ---------------------------------------------------------- */
+
+#timeline-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+}
+
+#timeline-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 24px;
+    padding: 0 8px;
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+    flex: none;
+}
+
+#timeline {
+    flex: 1;
+    position: relative;
+    overflow: auto;
+    background: var(--track);
+}
+
+#ruler {
+    position: sticky;
+    top: 0;
+    height: 18px;
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+    z-index: 3;
+}
+
+#ruler canvas { display: block; }
+
+#tracks { position: relative; }
+
+.track {
+    display: flex;
+    height: 22px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.track.selected { background: var(--accent-soft); }
+
+.track-label {
+    position: sticky;
+    left: 0;
+    width: 140px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 8px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    z-index: 2;
+    font-size: 11px;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.track-clips {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.clip {
+    position: absolute;
+    top: 2px;
+    height: 18px;
+    background: linear-gradient(180deg, #33507f, #2a4066);
+    border: 1px solid #4a6fa8;
+    border-radius: 3px;
+    overflow: hidden;
+    white-space: nowrap;
+    padding: 0 5px;
+    font-size: 10px;
+    line-height: 16px;
+    color: #cfe0ff;
+}
+.clip.still { background: linear-gradient(180deg, #3f5a3a, #31462e); border-color: #5c8255; }
+.clip.shape { background: linear-gradient(180deg, #6a4a7a, #523a5e); border-color: #8a63a0; }
+.clip.text { background: linear-gradient(180deg, #7a6a3a, #5e5230); border-color: #a08f55; }
+.clip.adjustment { background: linear-gradient(180deg, #3a6a6a, #2e5252); border-color: #55999a; }
+
+#playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--accent);
+    pointer-events: none;
+    z-index: 4;
+}
+#playhead::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -4px;
+    border: 4px solid transparent;
+    border-top-color: var(--accent);
+}
+
+.keyframe-lane {
+    position: absolute;
+    bottom: 2px;
+    left: 0;
+    right: 0;
+    height: 6px;
+}
+.keyframe {
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    background: var(--warn);
+    transform: rotate(45deg) translate(-3px, 0);
+    cursor: pointer;
+}
+.keyframe:hover { background: #ffd08a; }
+
+/* --- inspector --------------------------------------------------------- */
+
+.effect-card {
+    border-bottom: 1px solid var(--border);
+}
+
+.effect-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 8px;
+    background: var(--panel-raised);
+    cursor: pointer;
+}
+.effect-head:hover { background: #262b34; }
+.effect-head .name { flex: 1; font-weight: 600; font-size: 11px; }
+.effect-head .off { color: var(--text-faint); text-decoration: line-through; }
+
+.effect-body { padding: 4px 0 6px; }
+.effect-body.collapsed { display: none; }
+
+.param {
+    display: grid;
+    grid-template-columns: 88px 1fr 58px 18px;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    min-height: 22px;
+}
+.param:hover { background: rgba(255,255,255,0.02); }
+.param label {
+    color: var(--text-dim);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.param input[type=number] { width: 100%; }
+.param .stopwatch {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text-faint);
+    font-size: 11px;
+}
+.param .stopwatch.on { color: var(--warn); }
+.param .stopwatch:hover { color: var(--text); }
+
+.param.colour { grid-template-columns: 88px 1fr; }
+.param.colour input[type=color] {
+    width: 100%;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: none;
+}
+
+.param.expression { grid-template-columns: 1fr; padding: 3px 8px 5px; }
+.param.expression input[type=text] {
+    width: 100%;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 11px;
+}
+.param.expression .hint {
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-top: 2px;
+}
+.param.expression .hint.bad { color: var(--error); }
+
+.group-head {
+    padding: 5px 8px 2px;
+    color: var(--text-faint);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* --- modal ------------------------------------------------------------- */
+
+#modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+#modal-backdrop.open { display: flex; }
+
+.modal {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+    min-width: 340px;
+    max-width: 560px;
+}
+
+.modal-head {
+    padding: 9px 14px;
+    background: var(--panel-raised);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    border-radius: 6px 6px 0 0;
+}
+
+.modal-body { padding: 12px 14px; }
+.modal-body .field {
+    display: grid;
+    grid-template-columns: 108px 1fr;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+}
+.modal-body .field label { color: var(--text-dim); }
+.modal-body .field input, .modal-body .field select { width: 100%; }
+
+.modal-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+}
+
+/* --- progress ---------------------------------------------------------- */
+
+#progress {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    align-items: center;
+    justify-content: center;
+    z-index: 90;
+}
+#progress.open { display: flex; }
+
+.progress-card {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 18px 22px;
+    min-width: 320px;
+    text-align: center;
+}
+
+.progress-bar {
+    height: 6px;
+    background: var(--track);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 12px 0 8px;
+}
+.progress-bar div {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.15s;
+}
+
+/* --- empty states ------------------------------------------------------ */
+
+.empty {
+    padding: 18px 14px;
+    color: var(--text-faint);
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+.hint-text {
+    padding: 3px 8px 6px;
+    color: var(--text-faint);
+    font-size: 10px;
+}
+
+/* --- scrollbars -------------------------------------------------------- */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--track); }
+::-webkit-scrollbar-thumb {
+    background: #333944;
+    border-radius: 5px;
+    border: 2px solid var(--track);
+}
+::-webkit-scrollbar-thumb:hover { background: #434a57; }
+
+/* --- menu -------------------------------------------------------------- */
+
+#menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: none;
+}
+#menu-backdrop.open { display: block; }
+
+.menu {
+    position: absolute;
+    background: var(--panel-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.6);
+    padding: 4px;
+    min-width: 190px;
+}
+
+.menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 9px;
+    background: none;
+    border: none;
+    border-radius: 3px;
+    text-align: left;
+    color: var(--text);
+}
+.menu button:hover { background: var(--accent-soft); }
+.menu button:disabled { color: var(--text-faint); }
+.menu button .key {
+    margin-left: auto;
+    color: var(--text-faint);
+    font-size: 10px;
+}
+.menu hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+}
+</style>
+</head>
+<body>
+
+<div id="shell">
+    <div id="titlebar">
+        <span class="name">Keyflow</span>
+        <span class="project" id="project-name">Untitled</span>
+        <span class="dirty" id="dirty-mark"></span>
+        <span class="spacer"></span>
+        <div class="btn-group">
+            <button class="btn small" id="btn-new">New</button>
+            <button class="btn small" id="btn-open">Open</button>
+            <button class="btn small" id="btn-save">Save</button>
+            <button class="btn small" id="btn-export">Export</button>
+        </div>
+    </div>
+
+    <div id="main">
+        <!-- left: media bin and effect browser -->
+        <div class="panel">
+            <div class="tabs">
+                <button class="tab active" data-tab="effects">Effects</button>
+                <button class="tab" data-tab="media">Media</button>
+            </div>
+            <div class="panel-body" id="left-body"></div>
+        </div>
+
+        <!-- centre: viewer, then the timeline under it -->
+        <div class="panel" id="viewer-panel">
+            <div class="panel-head">
+                <span id="comp-label">Composition</span>
+                <span class="spacer" style="flex:1"></span>
+                <span id="comp-size" style="color:var(--text-faint)"></span>
+            </div>
+            <div id="viewer">
+                <div id="canvas-wrap">
+                    <canvas id="view" width="1280" height="720"></canvas>
+                    <canvas id="view-overlay"></canvas>
+                </div>
+            </div>
+            <div id="transport">
+                <button class="btn icon" id="btn-start" title="Go to start">|&lt;</button>
+                <button class="btn icon" id="btn-prev" title="Previous frame">&lt;</button>
+                <button class="btn icon" id="btn-play" title="Play (Space)">&#9654;</button>
+                <button class="btn icon" id="btn-next" title="Next frame">&gt;</button>
+                <button class="btn icon" id="btn-end" title="Go to end">&gt;|</button>
+                <span class="time" id="time-label">0:00.00 / 0:10.00</span>
+                <input type="range" id="scrub" min="0" max="10" step="0.001" value="0">
+                <select id="zoom-select" style="width:76px">
+                    <option value="fit">Fit</option>
+                    <option value="0.25">25%</option>
+                    <option value="0.5">50%</option>
+                    <option value="1">100%</option>
+                </select>
+            </div>
+            <div id="timeline-panel">
+                <div id="timeline-head">
+                    <div class="btn-group">
+                        <button class="btn small" id="btn-add-solid">+ Solid</button>
+                        <button class="btn small" id="btn-add-text">+ Text</button>
+                        <button class="btn small" id="btn-add-shape">+ Shape</button>
+                        <button class="btn small" id="btn-add-adjustment">+ Adjustment</button>
+                    </div>
+                    <span class="spacer" style="flex:1"></span>
+                    <button class="btn small" id="btn-delete-layer" title="Delete the selected layer">Delete</button>
+                    <button class="btn small" id="btn-duplicate-layer">Duplicate</button>
+                </div>
+                <div id="timeline">
+                    <div id="ruler"><canvas id="ruler-canvas" height="18"></canvas></div>
+                    <div id="tracks"></div>
+                    <div id="playhead"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- right: inspector -->
+        <div class="panel">
+            <div class="panel-head">
+                <span id="inspector-title">Inspector</span>
+                <span class="spacer" style="flex:1"></span>
+                <button class="btn small" id="btn-reset-transform" title="Reset the layer's transform">Reset</button>
+            </div>
+            <div class="panel-body" id="inspector"></div>
+        </div>
+    </div>
+
+    <div id="statusbar">
+        <span id="status">Ready</span>
+        <span class="spacer"></span>
+        <span id="driver"></span>
+    </div>
+</div>
+
+<div id="modal-backdrop"><div class="modal" id="modal"></div></div>
+<div id="progress"><div class="progress-card">
+    <div id="progress-label">Rendering</div>
+    <div class="progress-bar"><div id="progress-fill"></div></div>
+    <div style="color:var(--text-dim);font-size:11px" id="progress-detail"></div>
+    <button class="btn" id="btn-cancel-render" style="margin-top:12px">Cancel</button>
+</div></div>
+<div id="menu-backdrop"></div>
+
+<script>
+/* ===========================================================================
+   The page.
+
+   The host owns the document. This script sends intent and renders whatever
+   snapshot comes back; it never edits its own copy optimistically. That is
+   what keeps the two sides from drifting into disagreeing about the document,
+   and it is why every mutation is one line: post a message and wait.
+
+   Everything the inspector draws is built from the catalogue the host sends,
+   so a parameter's range, its label and its control type live in one place —
+   the C++ spec table — and this file carries no list of effects at all.
+   =========================================================================== */
+
+'use strict';
+
+// --- the transport to the host ---------------------------------------------
+
+const host = {
+    /** Messages sent before the page said ready are dropped by the host. */
+    post(message) {
+        if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.postMessage(JSON.stringify(message));
+        } else {
+            // Opened outside the host, which happens while developing the
+            // page. Logging beats throwing: the layout is still inspectable.
+            console.log('->', message);
+        }
+    }
+};
+
+// --- application state -----------------------------------------------------
+//
+// A cache of what the host last sent. Not the source of truth — the host is —
+// but the thing every render reads, so that a message arriving mid-render
+// cannot tear what is on screen.
+
+const state = {
+    document: null,
+    catalogue: null,
+    effectsById: new Map(),
+    playhead: 0,
+    selectedLayerId: '',
+    selectedEffectId: '',
+    dirty: false,
+    projectPath: '',
+    canUndo: false,
+    canRedo: false,
+    leftTab: 'effects',
+    /** Effect-card collapse state, keyed by instance id. */
+    collapsed: new Set(),
+    /** Parameters showing their expression field, keyed by effectId + name. */
+    expressionOpen: new Set(),
+    playing: false,
+    zoom: 'fit',
+    /** The last rendered frame, as an ImageBitmap or null. */
+    frameBitmap: null,
+    renderInFlight: false
+};
+
+/** The active composition, or null. */
+function composition() {
+    if (!state.document) return null;
+    const list = state.document.compositions || [];
+    if (!list.length) return null;
+    return list.find(c => c.id === state.document.activeCompositionId) || list[0];
+}
+
+/** The selected layer, or null. */
+function selectedLayer() {
+    const comp = composition();
+    if (!comp) return null;
+    return (comp.layers || []).find(l => l.id === state.selectedLayerId) || null;
+}
+
+/** A parameter's current value, preferring a keyframe at the playhead. */
+function parameterValue(effect, paramName, specParam) {
+    const stored = effect.params && effect.params[paramName];
+    if (!stored) return specParam ? specParam.default : 0;
+    if (stored.keys && stored.keys.length) {
+        return evaluateKeyframes(stored.keys, state.playhead);
+    }
+    return stored.value;
+}
+
+/** The same interpolation the host does, so the inspector matches the render. */
+function evaluateKeyframes(keys, time) {
+    if (!keys.length) return 0;
+    if (keys.length === 1) return keys[0].value;
+    if (time <= keys[0].time) return keys[0].value;
+    if (time >= keys[keys.length - 1].time) return keys[keys.length - 1].value;
+
+    let i = 0;
+    while (i + 1 < keys.length && keys[i + 1].time <= time) i++;
+    const a = keys[i], b = keys[i + 1];
+    const span = b.time - a.time;
+    if (span <= 0) return b.value;
+    const t = (time - a.time) / span;
+
+    switch (a.interp) {
+    case 'hold':   return a.value;
+    case 'linear': return a.value + (b.value - a.value) * t;
+    case 'bezier': return a.value + (b.value - a.value) * smoothstep(t);
+    default:       return a.value + (b.value - a.value) * smoothstep(t);
+    }
+}
+
+function smoothstep(t) { return t * t * (3 - 2 * t); }
+
+/** Format seconds as m:ss.cc. */
+function formatTime(seconds) {
+    const clamped = Math.max(0, seconds);
+    const minutes = Math.floor(clamped / 60);
+    const rest = clamped - minutes * 60;
+    return minutes + ':' + (rest < 10 ? '0' : '') + rest.toFixed(2);
+}
+
+// --- small DOM helpers -----------------------------------------------------
+
+function el(tag, options = {}, children = []) {
+    const node = document.createElement(tag);
+    if (options.className) node.className = options.className;
+    if (options.text != null) node.textContent = options.text;
+    if (options.html != null) node.innerHTML = options.html;
+    if (options.attrs) for (const [k, v] of Object.entries(options.attrs)) node.setAttribute(k, v);
+    if (options.style) for (const [k, v] of Object.entries(options.style)) node.style[k] = v;
+    if (options.on) for (const [k, v] of Object.entries(options.on)) node.addEventListener(k, v);
+    for (const child of children) if (child) node.appendChild(child);
+    return node;
+}
+
+const $ = id => document.getElementById(id);
+
+// ===========================================================================
+// Message handling
+// ===========================================================================
+
+function handleMessage(text) {
+    let message;
+    try {
+        message = JSON.parse(text);
+    } catch (error) {
+        setStatus('The host sent something unreadable: ' + error.message, 'error');
+        return;
+    }
+
+    switch (message.type) {
+    case 'catalogue':
+        state.catalogue = message;
+        state.effectsById = new Map((message.effects || []).map(e => [e.id, e]));
+        renderLeftPanel();
+        renderInspector();
+        break;
+
+    case 'document':
+        state.document = message.document;
+        state.playhead = message.playhead || 0;
+        state.selectedLayerId = message.selectedLayerId || '';
+        state.selectedEffectId = message.selectedEffectId || '';
+        state.dirty = message.dirty || false;
+        state.projectPath = message.projectPath || '';
+        state.canUndo = message.canUndo || false;
+        state.canRedo = message.canRedo || false;
+        renderAll();
+        requestFrame();
+        break;
+
+    case 'state':
+        state.playhead = message.playhead != null ? message.playhead : state.playhead;
+        state.selectedLayerId = message.selectedLayerId || '';
+        state.selectedEffectId = message.selectedEffectId || '';
+        state.dirty = message.dirty || false;
+        state.canUndo = message.canUndo || false;
+        state.canRedo = message.canRedo || false;
+        renderTitlebar();
+        renderTimeline();
+        renderInspector();
+        renderLeftPanel();
+        break;
+
+    case 'frame':
+        // The host rendered a frame and sent it as a data URL.
+        loadFrame(message.data);
+        break;
+
+    case 'error':
+        setStatus(message.message, 'error');
+        break;
+
+    case 'renderProgress':
+        showProgress(message.frame, message.total, message.stage);
+        break;
+
+    case 'renderComplete':
+        hideProgress();
+        if (message.success) {
+            setStatus('Exported to ' + message.path, 'ok');
+        } else {
+            setStatus('Export failed: ' + message.message, 'error');
+        }
+        break;
+
+    case 'driver': {
+        const parts = [];
+        if (message.rendererReady) {
+            parts.push(message.driver);
+        } else {
+            parts.push('no GPU: ' + (message.driver || 'unknown'));
+        }
+        parts.push(message.ffmpeg === 'found' ? 'ffmpeg ok' : 'ffmpeg missing');
+        $('driver').textContent = parts.join('  ·  ');
+        $('driver').title = message.ffmpegPath || '';
+        if (!message.rendererReady) {
+            setStatus('The preview needs a working OpenGL driver. ' + message.driver, 'error');
+        }
+        break;
+    }
+
+    case 'status':
+        setStatus(message.message);
+        break;
+
+    case 'frameFailed':
+        // The viewer stays black on purpose — that is what a composition with
+        // no layers looks like — so the reason has to go somewhere visible.
+        state.renderInFlight = false;
+        setStatus(message.reason, 'error');
+        break;
+
+    case 'exportPath': {
+        const field = document.querySelector('#modal input[type=text]');
+        if (field) field.value = message.path;
+        break;
+    }
+
+    case 'confirmClose':
+        // The host asks before quitting so unsaved work is not lost. The reply
+        // names the message so the host knows what it is answering.
+        host.post({
+            type: 'confirmCloseReply',
+            quit: !state.dirty || confirm('Discard unsaved changes and quit?')
+        });
+        break;
+
+    default:
+        console.log('unhandled message', message);
+    }
+}
+
+if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener('message', event => handleMessage(event.data));
+}
+
+/**
+ * The host's entry point.
+ *
+ * The host cannot use postMessage — that is the page-to-host direction — so it
+ * calls this by name with a JSON string. Both paths land in handleMessage, so
+ * a message behaves the same however it arrived.
+ *
+ * Defined unconditionally and before the host can call it: the host sends its
+ * first message the moment the page reports ready, and a hook installed later
+ * would drop the catalogue and the document with no error anywhere.
+ */
+window.__keyflowReceive = function (text) {
+    handleMessage(typeof text === 'string' ? text : JSON.stringify(text));
+};
+
+// ===========================================================================
+// The viewer
+// ===========================================================================
+
+const view = $('view');
+const viewContext = view.getContext('2d');
+const overlay = $('view-overlay');
+const overlayContext = overlay.getContext('2d');
+
+/**
+ * Ask the host for the current frame.
+ *
+ * Coalesced: dragging the playhead produces a request per mouse move, and
+ * letting all of them through would queue a render per pixel of travel. One
+ * in flight at a time, with the latest request remembered.
+ */
+function requestFrame() {
+    if (state.renderInFlight) return;
+    state.renderInFlight = true;
+    host.post({ type: 'requestFrame', time: state.playhead });
+}
+
+/** Draw a frame the host sent, as a data URL. */
+function loadFrame(dataUrl) {
+    state.renderInFlight = false;
+    const image = new Image();
+    image.onload = () => {
+        state.frameBitmap = image;
+        drawViewer();
+        // A request that arrived while this one was loading.
+        if (state.pendingFrame) {
+            state.pendingFrame = false;
+            requestFrame();
+        }
+    };
+    image.onerror = () => { state.renderInFlight = false; };
+    image.src = dataUrl;
+}
+
+/** Fit the canvas to the viewer at the current zoom. */
+function resizeViewer() {
+    const comp = composition();
+    if (!comp) return;
+
+    // Measure the viewer, never the canvas: the canvas's current size is the
+    // output of this function, so reading it back makes the fit depend on the
+    // last fit rather than on the space that actually exists.
+    const holder = $('viewer');
+    const available = {
+        width: Math.max(1, holder.clientWidth - 24),
+        height: Math.max(1, holder.clientHeight - 24)
+    };
+
+    let scale;
+    if (state.zoom === 'fit') {
+        scale = Math.min(available.width / comp.width, available.height / comp.height);
+        scale = Math.min(scale, 1);
+    } else {
+        scale = parseFloat(state.zoom);
+    }
+    scale = Math.max(scale, 0.05);
+
+    const width = Math.max(1, Math.round(comp.width * scale));
+    const height = Math.max(1, Math.round(comp.height * scale));
+
+    for (const canvas of [view, overlay]) {
+        canvas.style.width = width + 'px';
+        canvas.style.height = height + 'px';
+    }
+    overlay.width = width;
+    overlay.height = height;
+    drawViewer();
+}
+
+/** Paint the last frame the host sent, letterboxed into the canvas. */
+function drawViewer() {
+    const comp = composition();
+    if (!comp) return;
+
+    const width = view.clientWidth || comp.width;
+    const height = view.clientHeight || comp.height;
+    if (view.width !== width || view.height !== height) {
+        view.width = width;
+        view.height = height;
+    }
+
+    viewContext.clearRect(0, 0, view.width, view.height);
+    if (state.frameBitmap) {
+        viewContext.drawImage(state.frameBitmap, 0, 0, view.width, view.height);
+    } else {
+        // Before the first frame arrives, the composition's own background is
+        // the honest thing to show — not a spinner over black.
+        viewContext.fillStyle = rgbToCss(
+            comp.background ? comp.background.r : 0,
+            comp.background ? comp.background.g : 0,
+            comp.background ? comp.background.b : 0);
+        viewContext.fillRect(0, 0, view.width, view.height);
+    }
+    drawOverlay();
+}
+
+/** Draw the selection box and the anchor for the selected layer. */
+function drawOverlay() {
+    overlayContext.clearRect(0, 0, overlay.width, overlay.height);
+    const comp = composition();
+    const layer = selectedLayer();
+    if (!comp || !layer) return;
+
+    const t = layer.transform || {};
+    const value = name => {
+        const stored = t[name];
+        if (!stored) return 0;
+        return stored.keys && stored.keys.length
+            ? evaluateKeyframes(stored.keys, state.playhead)
+            : stored.value;
+    };
+
+    const scaleX = value('scaleX') || 1;
+    const scaleY = value('scaleY') || 1;
+    const rotation = value('rotation') || 0;
+    const anchorX = value('anchorX');
+    const anchorY = value('anchorY');
+
+    // The layer's own size, which for now is the composition's: media layers
+    // carry their real size once decoded, and the host will send it.
+    const layerWidth = layer.width || comp.width;
+    const layerHeight = layer.height || comp.height;
+
+    const px = value('positionX') || comp.width * 0.5;
+    const py = value('positionY') || comp.height * 0.5;
+
+    const scale = overlay.width / comp.width;
+    overlayContext.save();
+    overlayContext.translate(px * scale, py * scale);
+    overlayContext.rotate(rotation * Math.PI / 180);
+    overlayContext.scale(scaleX, scaleY);
+
+    const w = layerWidth * scale;
+    const h = layerHeight * scale;
+    const ox = -anchorX * w;
+    const oy = -anchorY * h;
+
+    overlayContext.strokeStyle = 'rgba(76,141,255,0.9)';
+    overlayContext.lineWidth = 1;
+    overlayContext.strokeRect(ox, oy, w, h);
+
+    // Corner handles, drawn in the layer's own rotated frame so they sit on
+    // the corners rather than on the bounding box.
+    overlayContext.fillStyle = 'rgba(76,141,255,0.9)';
+    const handle = 3;
+    for (const [hx, hy] of [[ox, oy], [ox + w, oy], [ox, oy + h], [ox + w, oy + h]]) {
+        overlayContext.fillRect(hx - handle, hy - handle, handle * 2, handle * 2);
+    }
+
+    // The anchor, as a crosshair.
+    overlayContext.strokeStyle = 'rgba(255,180,84,0.9)';
+    overlayContext.beginPath();
+    overlayContext.moveTo(-6, 0); overlayContext.lineTo(6, 0);
+    overlayContext.moveTo(0, -6); overlayContext.lineTo(0, 6);
+    overlayContext.stroke();
+
+    overlayContext.restore();
+}
+
+function rgbToCss(r, g, b) {
+    return 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(b * 255) + ')';
+}
+
+// ===========================================================================
+// The left panel: effects browser and media bin
+// ===========================================================================
+
+$('left-body').addEventListener('click', event => {
+    const tab = event.target.closest('.tab');
+    if (tab) return; // handled by the tab listener below
+});
+
+for (const tab of document.querySelectorAll('.tab')) {
+    tab.addEventListener('click', () => {
+        state.leftTab = tab.dataset.tab;
+        for (const other of document.querySelectorAll('.tab')) {
+            other.classList.toggle('active', other === tab);
+        }
+        renderLeftPanel();
+    });
+}
+
+function renderLeftPanel() {
+    const body = $('left-body');
+    body.textContent = '';
+    if (state.leftTab === 'effects') renderEffectBrowser(body);
+    else renderMediaBin(body);
+}
+
+function renderEffectBrowser(body) {
+    const catalogue = state.catalogue;
+    if (!catalogue) {
+        body.appendChild(el('div', { className: 'empty', text: 'Loading effects…' }));
+        return;
+    }
+
+    const filter = el('input', {
+        attrs: { type: 'text', placeholder: 'Search effects…' },
+        style: { margin: '6px 8px', width: 'calc(100% - 16px)' }
+    });
+    filter.addEventListener('input', () => drawList(filter.value.toLowerCase()));
+    body.appendChild(filter);
+
+    const list = el('div');
+    body.appendChild(list);
+
+    function drawList(query) {
+        list.textContent = '';
+        const byCategory = new Map();
+
+        for (const effect of catalogue.effects) {
+            if (query && !effect.name.toLowerCase().includes(query)
+                && !effect.category.toLowerCase().includes(query)) continue;
+            if (!byCategory.has(effect.category)) byCategory.set(effect.category, []);
+            byCategory.get(effect.category).push(effect);
+        }
+
+        if (!byCategory.size) {
+            list.appendChild(el('div', { className: 'empty', text: 'No effect matches.' }));
+            return;
+        }
+
+        const layer = selectedLayer();
+        for (const category of catalogue.categories) {
+            const effects = byCategory.get(category);
+            if (!effects) continue;
+
+            const head = el('div', { className: 'group-head', text: category });
+            head.style.cursor = 'pointer';
+            list.appendChild(head);
+
+            for (const effect of effects) {
+                const row = el('div', { className: 'row' }, [
+                    el('span', { className: 'grow', text: effect.name })
+                ]);
+                row.style.cursor = 'pointer';
+                row.title = layer
+                    ? 'Add ' + effect.name + ' to ' + layer.name
+                    : 'Select a layer first';
+                row.addEventListener('click', () => {
+                    if (!state.selectedLayerId) {
+                        setStatus('Select a layer first, then add an effect.', 'error');
+                        return;
+                    }
+                    host.post({
+                        type: 'addEffect',
+                        layerId: state.selectedLayerId,
+                        specId: effect.id
+                    });
+                });
+                list.appendChild(row);
+            }
+        }
+    }
+
+    drawList('');
+}
+
+function renderMediaBin(body) {
+    const assets = (state.document && state.document.assets) || [];
+
+    const button = el('button', {
+        className: 'btn',
+        text: 'Import media…',
+        style: { margin: '8px', width: 'calc(100% - 16px)' }
+    });
+    button.addEventListener('click', () => host.post({ type: 'importMedia' }));
+    body.appendChild(button);
+
+    if (!assets.length) {
+        body.appendChild(el('div', {
+            className: 'empty',
+            text: 'No media yet. Import a video or an image to add it to the composition.'
+        }));
+        return;
+    }
+
+    for (const asset of assets) {
+        const row = el('div', { className: 'row' }, [
+            el('span', { className: 'grow', text: asset.name || asset.path }),
+            el('span', {
+                className: 'kind',
+                text: asset.still ? 'still' : (asset.width + '×' + asset.height)
+            })
+        ]);
+        row.title = asset.path;
+        body.appendChild(row);
+    }
+}
+
+// ===========================================================================
+// The timeline
+// ===========================================================================
+
+let pixelsPerSecond = 60;
+
+function renderTimeline() {
+    const comp = composition();
+    const tracks = $('tracks');
+    const ruler = $('ruler-canvas');
+    tracks.textContent = '';
+    if (!comp) return;
+
+    // The timeline scrolls horizontally; the label column is sticky, so the
+    // scrollable width is the track area's, not the panel's.
+    const trackAreaWidth = Math.max(
+        $('timeline').clientWidth - 140,
+        comp.duration * pixelsPerSecond + 40);
+
+    ruler.width = trackAreaWidth;
+    ruler.height = 18;
+    drawRuler(ruler, comp, trackAreaWidth);
+
+    for (const layer of comp.layers) {
+        tracks.appendChild(buildTrack(layer, comp, trackAreaWidth));
+    }
+
+    // The playhead, positioned over the track area.
+    const playhead = $('playhead');
+    playhead.style.left = (140 + state.playhead * pixelsPerSecond) + 'px';
+    playhead.style.height = (18 + comp.layers.length * 22) + 'px';
+}
+
+function drawRuler(canvas, comp, width) {
+    const context = canvas.getContext('2d');
+    context.clearRect(0, 0, width, canvas.height);
+
+    // Choose a tick spacing that leaves at least 60px between labels.
+    const candidates = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60];
+    let step = candidates[candidates.length - 1];
+    for (const candidate of candidates) {
+        if (candidate * pixelsPerSecond >= 60) { step = candidate; break; }
+    }
+
+    context.font = '10px "Segoe UI", sans-serif';
+    context.textBaseline = 'middle';
+
+    for (let t = 0; t <= comp.duration + step; t += step) {
+        const x = Math.round(t * pixelsPerSecond) + 0.5;
+        context.strokeStyle = '#3d434f';
+        context.beginPath();
+        context.moveTo(x, canvas.height - 6);
+        context.lineTo(x, canvas.height);
+        context.stroke();
+
+        context.fillStyle = '#8d95a5';
+        context.fillText(formatTime(t), x + 3, canvas.height / 2 - 1);
+    }
+}
+
+function buildTrack(layer, comp, width) {
+    const track = el('div', {
+        className: 'track' + (layer.id === state.selectedLayerId ? ' selected' : '')
+    });
+
+    const label = el('div', { className: 'track-label' }, [
+        el('span', {
+            className: 'toggle' + (layer.visible ? ' on' : ''),
+            text: layer.visible ? '◉' : '○',
+            attrs: { title: layer.visible ? 'Hide' : 'Show' }
+        }),
+        el('span', { className: 'grow', text: layer.name })
+    ]);
+    label.querySelector('.toggle').addEventListener('click', event => {
+        event.stopPropagation();
+        host.post({
+            type: 'setLayerProperty',
+            layerId: layer.id,
+            property: 'visible',
+            value: !layer.visible
+        });
+    });
+    track.appendChild(label);
+
+    const clips = el('div', { className: 'track-clips', style: { width: width + 'px' } });
+
+    const start = Math.max(0, layer.inPoint) * pixelsPerSecond;
+    const end = Math.min(comp.duration, layer.outPoint) * pixelsPerSecond;
+    const kindClass = layer.kind === 'solid' ? 'shape'
+                    : layer.kind === 'text' ? 'text'
+                    : layer.kind === 'adjustment' ? 'adjustment'
+                    : (layer.assetId ? '' : 'still');
+
+    const clip = el('div', {
+        className: 'clip ' + kindClass,
+        text: layer.name,
+        style: {
+            left: start + 'px',
+            width: Math.max(8, end - start) + 'px'
+        }
+    });
+
+    // Dragging the clip moves the layer's in and out points together, which is
+    // the operation that matters when arranging.
+    clip.addEventListener('mousedown', event => {
+        event.preventDefault();
+        const startX = event.clientX;
+        const startIn = layer.inPoint;
+        const startOut = layer.outPoint;
+        const length = startOut - startIn;
+
+        const onMove = moveEvent => {
+            const delta = (moveEvent.clientX - startX) / pixelsPerSecond;
+            const nextIn = Math.max(0, Math.min(comp.duration - length, startIn + delta));
+            host.post({
+                type: 'setLayerProperty',
+                layerId: layer.id,
+                property: 'inPoint',
+                value: nextIn
+            });
+            host.post({
+                type: 'setLayerProperty',
+                layerId: layer.id,
+                property: 'outPoint',
+                value: nextIn + length
+            });
+        };
+        const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    });
+
+    clips.appendChild(clip);
+
+    // The keyframe lane, when the layer has any animated parameter.
+    const keyframes = collectKeyframes(layer);
+    if (keyframes.length) {
+        const lane = el('div', { className: 'keyframe-lane' });
+        for (const key of keyframes) {
+            const dot = el('div', {
+                className: 'keyframe',
+                style: { left: (key.time * pixelsPerSecond) + 'px' },
+                attrs: { title: key.label + ' @ ' + formatTime(key.time) }
+            });
+            dot.addEventListener('click', event => {
+                event.stopPropagation();
+                setPlayhead(key.time);
+            });
+            lane.appendChild(dot);
+        }
+        clips.appendChild(lane);
+    }
+
+    track.appendChild(clips);
+    track.addEventListener('click', () => {
+        host.post({ type: 'selectLayer', layerId: layer.id });
+    });
+    return track;
+}
+
+/** Every keyframe on a layer, for the lane. */
+function collectKeyframes(layer) {
+    const found = [];
+    const transform = layer.transform || {};
+    for (const [name, value] of Object.entries(transform)) {
+        if (!value || !value.keys) continue;
+        for (const key of value.keys) {
+            found.push({ time: key.time, label: name });
+        }
+    }
+    for (const effect of layer.effects || []) {
+        for (const [name, value] of Object.entries(effect.params || {})) {
+            if (!value || !value.keys) continue;
+            for (const key of value.keys) {
+                found.push({ time: key.time, label: effect.specId + '.' + name });
+            }
+        }
+    }
+    return found;
+}
+
+// ===========================================================================
+// The inspector
+// ===========================================================================
+
+function renderInspector() {
+    const body = $('inspector');
+    body.textContent = '';
+    const layer = selectedLayer();
+
+    if (!layer) {
+        $('inspector-title').textContent = 'Inspector';
+        body.appendChild(el('div', {
+            className: 'empty',
+            text: 'Select a layer to edit its transform and effects.'
+        }));
+        return;
+    }
+
+    $('inspector-title').textContent = layer.name;
+
+    body.appendChild(buildTransformSection(layer));
+
+    for (const effect of layer.effects || []) {
+        body.appendChild(buildEffectCard(layer, effect));
+    }
+
+    if (!(layer.effects || []).length) {
+        body.appendChild(el('div', {
+            className: 'empty',
+            text: 'No effects. Pick one from the browser on the left.'
+        }));
+    }
+}
+
+function buildTransformSection(layer) {
+    const card = el('div', { className: 'effect-card' });
+    const collapsed = state.collapsed.has('transform');
+
+    const head = el('div', { className: 'effect-head' }, [
+        el('span', { className: 'name', text: 'Transform' })
+    ]);
+    head.addEventListener('click', () => {
+        if (collapsed) state.collapsed.delete('transform');
+        else state.collapsed.add('transform');
+        renderInspector();
+    });
+    card.appendChild(head);
+
+    const body = el('div', { className: 'effect-body' + (collapsed ? ' collapsed' : '') });
+    card.appendChild(body);
+
+    // The transform's own parameters, declared here rather than in the
+    // catalogue: the compositor applies them, not a shader pass, so they have
+    // no EffectSpec. The ranges match the catalogue's convention.
+    const specs = [
+        { name: 'positionX', label: 'Position X', min: -4000, max: 4000, step: 1, def: 0 },
+        { name: 'positionY', label: 'Position Y', min: -4000, max: 4000, step: 1, def: 0 },
+        { name: 'scaleX',    label: 'Scale X',    min: 0,     max: 10,   step: 0.01, def: 1 },
+        { name: 'scaleY',    label: 'Scale Y',    min: 0,     max: 10,   step: 0.01, def: 1 },
+        { name: 'rotation',  label: 'Rotation',   min: -360,  max: 360,  step: 0.5, def: 0 },
+        { name: 'opacity',   label: 'Opacity',    min: 0,     max: 1,    step: 0.01, def: 1 },
+        { name: 'anchorX',   label: 'Anchor X',   min: -1,    max: 2,    step: 0.01, def: 0.5 },
+        { name: 'anchorY',   label: 'Anchor Y',   min: -1,    max: 2,    step: 0.01, def: 0.5 }
+    ];
+
+    for (const spec of specs) {
+        const stored = (layer.transform || {})[spec.name] || { value: spec.def };
+        body.appendChild(buildParameterRow({
+            layerId: layer.id,
+            instanceId: 'transform',
+            spec,
+            stored
+        }));
+    }
+
+    // The blend controls, which belong to the layer rather than to an effect.
+    body.appendChild(el('div', { className: 'group-head', text: 'Blending' }));
+
+    const blendRow = el('div', { className: 'param' });
+    blendRow.style.gridTemplateColumns = '88px 1fr';
+    blendRow.appendChild(el('label', { text: 'Mode' }));
+    const blendSelect = el('select');
+    for (const mode of ['normal', 'darken', 'multiply', 'color-burn', 'linear-burn',
+                        'lighten', 'screen', 'color-dodge', 'linear-dodge', 'overlay',
+                        'soft-light', 'hard-light', 'vivid-light', 'difference',
+                        'exclusion', 'subtract', 'divide', 'hue', 'saturation',
+                        'color', 'luminosity']) {
+        const option = el('option', { text: mode.replace(/-/g, ' ') });
+        option.value = mode;
+        if (layer.blend === mode) option.selected = true;
+        blendSelect.appendChild(option);
+    }
+    blendSelect.addEventListener('change', () => {
+        host.post({
+            type: 'setLayerProperty',
+            layerId: layer.id,
+            property: 'blend',
+            value: blendSelect.value
+        });
+    });
+    blendRow.appendChild(blendSelect);
+    body.appendChild(blendRow);
+
+    const strengthRow = el('div', { className: 'param' });
+    strengthRow.style.gridTemplateColumns = '88px 1fr 58px';
+    strengthRow.appendChild(el('label', { text: 'Strength' }));
+    const strengthSlider = el('input', {
+        attrs: { type: 'range', min: 0, max: 1, step: 0.01 },
+        style: { width: '100%' }
+    });
+    strengthSlider.value = layer.blendStrength != null ? layer.blendStrength : 1;
+    const strengthNumber = el('input', { attrs: { type: 'number', min: 0, max: 1, step: 0.01 } });
+    strengthNumber.value = strengthSlider.value;
+    const postStrength = value => host.post({
+        type: 'setLayerProperty',
+        layerId: layer.id,
+        property: 'blendStrength',
+        value
+    });
+    strengthSlider.addEventListener('input', () => {
+        strengthNumber.value = strengthSlider.value;
+        postStrength(parseFloat(strengthSlider.value));
+    });
+    strengthNumber.addEventListener('change', () => {
+        strengthSlider.value = strengthNumber.value;
+        postStrength(parseFloat(strengthNumber.value));
+    });
+    strengthRow.appendChild(strengthSlider);
+    strengthRow.appendChild(strengthNumber);
+    body.appendChild(strengthRow);
+
+    return card;
+}
+
+function buildEffectCard(layer, effect) {
+    const spec = state.effectsById.get(effect.specId);
+    const card = el('div', { className: 'effect-card' });
+    const collapsed = state.collapsed.has(effect.instanceId);
+
+    const head = el('div', { className: 'effect-head' });
+    const toggle = el('span', {
+        className: 'toggle' + (effect.enabled ? ' on' : ''),
+        text: effect.enabled ? '◉' : '○',
+        attrs: { title: effect.enabled ? 'Disable' : 'Enable' }
+    });
+    toggle.addEventListener('click', event => {
+        event.stopPropagation();
+        host.post({
+            type: 'toggleEffect',
+            layerId: layer.id,
+            instanceId: effect.instanceId,
+            enabled: !effect.enabled
+        });
+    });
+    head.appendChild(toggle);
+
+    head.appendChild(el('span', {
+        className: 'name' + (effect.enabled ? '' : ' off'),
+        text: spec ? spec.name : effect.specId
+    }));
+
+    const reset = el('button', { className: 'btn small', text: 'Reset' });
+    reset.addEventListener('click', event => {
+        event.stopPropagation();
+        host.post({
+            type: 'resetEffect',
+            layerId: layer.id,
+            instanceId: effect.instanceId
+        });
+    });
+    head.appendChild(reset);
+
+    const remove = el('button', { className: 'btn small', text: '✕' });
+    remove.title = 'Remove this effect';
+    remove.addEventListener('click', event => {
+        event.stopPropagation();
+        host.post({
+            type: 'removeEffect',
+            layerId: layer.id,
+            instanceId: effect.instanceId
+        });
+    });
+    head.appendChild(remove);
+
+    head.addEventListener('click', () => {
+        if (collapsed) state.collapsed.delete(effect.instanceId);
+        else state.collapsed.add(effect.instanceId);
+        renderInspector();
+    });
+    card.appendChild(head);
+
+    const body = el('div', { className: 'effect-body' + (collapsed ? ' collapsed' : '') });
+    card.appendChild(body);
+
+    if (!spec) {
+        // A project from a newer build can carry an effect this build does not
+        // know. Showing it rather than dropping it means the user can see what
+        // is there and remove it deliberately.
+        body.appendChild(el('div', {
+            className: 'hint-text',
+            text: 'This effect is not in this build of Keyflow. It is kept in the '
+                + 'project, and will render again in a version that has it.'
+        }));
+        return card;
+    }
+
+    // Group the parameters, keeping the spec's order within each group.
+    let currentGroup = null;
+    for (const param of spec.params) {
+        const group = param.group || '';
+        if (group !== currentGroup) {
+            currentGroup = group;
+            if (group) body.appendChild(el('div', { className: 'group-head', text: group }));
+        }
+
+        const stored = (effect.params || {})[param.name] || { value: param.default };
+        body.appendChild(buildParameterRow({
+            layerId: layer.id,
+            instanceId: effect.instanceId,
+            spec: param,
+            stored,
+            effect
+        }));
+    }
+
+    return card;
+}
+
+function buildParameterRow({ layerId, instanceId, spec, stored, effect }) {
+    const row = el('div', { className: 'param' });
+
+    // A colour is three consecutive scalars; draw them as one swatch on the
+    // R channel and hide the G and B rows. The spec still declares three
+    // parameters, because that is what the shader binds.
+    const isColourR = spec.kind === 'colour' && spec.name.endsWith('R');
+
+    if (spec.kind === 'colour' && !isColourR) {
+        // The G and B halves are folded into the R row's swatch.
+        row.style.display = 'none';
+        return row;
+    }
+
+    if (isColourR && effect) {
+        row.className = 'param colour';
+        const base = spec.name.slice(0, -1);
+        const gSpec = (state.effectsById.get(effect.specId).params || [])
+            .find(p => p.name === base + 'G');
+        const bSpec = (state.effectsById.get(effect.specId).params || [])
+            .find(p => p.name === base + 'B');
+
+        const gValue = gSpec ? parameterValue(effect, base + 'G', gSpec) : 0;
+        const bValue = bSpec ? parameterValue(effect, base + 'B', bSpec) : 0;
+        const rValue = parameterValue(effect, spec.name, spec);
+
+        row.appendChild(el('label', { text: spec.label.replace(/\s*R$/, '') }));
+
+        const picker = el('input', { attrs: { type: 'color' } });
+        picker.value = toHex(rValue, gValue, bValue);
+        picker.addEventListener('input', () => {
+            const rgb = fromHex(picker.value);
+            for (const [name, value] of [[spec.name, rgb[0]],
+                                         [base + 'G', rgb[1]],
+                                         [base + 'B', rgb[2]]]) {
+                host.post({
+                    type: 'setParameter',
+                    layerId,
+                    instanceId,
+                    name,
+                    value
+                });
+            }
+        });
+        row.appendChild(picker);
+        return row;
+    }
+
+    if (spec.kind === 'toggle') {
+        row.style.gridTemplateColumns = '88px 1fr';
+        row.appendChild(el('label', { text: spec.label }));
+        const box = el('input', { attrs: { type: 'checkbox' } });
+        box.checked = parameterValue(effect, spec.name, spec) > 0.5;
+        box.addEventListener('change', () => {
+            host.post({
+                type: 'setParameter',
+                layerId,
+                instanceId,
+                name: spec.name,
+                value: box.checked ? 1 : 0
+            });
+        });
+        row.appendChild(box);
+        return row;
+    }
+
+    if (spec.kind === 'choice') {
+        row.style.gridTemplateColumns = '88px 1fr';
+        row.appendChild(el('label', { text: spec.label }));
+        const select = el('select');
+        (spec.choices || []).forEach((choice, index) => {
+            const option = el('option', { text: choice });
+            option.value = String(index);
+            if (Math.round(parameterValue(effect, spec.name, spec)) === index) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+        select.addEventListener('change', () => {
+            host.post({
+                type: 'setParameter',
+                layerId,
+                instanceId,
+                name: spec.name,
+                value: parseFloat(select.value)
+            });
+        });
+        row.appendChild(select);
+        return row;
+    }
+
+    // A scalar or an angle: a slider and a number box that stay in step.
+    const value = parameterValue(effect, spec.name, spec);
+    const min = spec.min != null ? spec.min : 0;
+    const max = spec.max != null ? spec.max : 1;
+
+    row.appendChild(el('label', { text: spec.label }));
+
+    const slider = el('input', {
+        attrs: {
+            type: 'range',
+            min: spec.unbounded ? Math.min(min, value - 1) : min,
+            max: spec.unbounded ? Math.max(max, value + 1) : max,
+            step: (max - min) / 1000
+        },
+        style: { width: '100%' }
+    });
+    slider.value = value;
+
+    const number = el('input', {
+        attrs: { type: 'number', step: (max - min) / 1000 }
+    });
+    number.value = Math.round(value * 1000) / 1000;
+
+    const stopwatch = el('button', {
+        className: 'stopwatch' + (stored.keys && stored.keys.length ? ' on' : ''),
+        text: '◆',
+        attrs: { title: 'Animate this parameter' }
+    });
+
+    const post = newValue => host.post({
+        type: 'setParameter',
+        layerId,
+        instanceId,
+        name: spec.name,
+        value: newValue
+    });
+
+    slider.addEventListener('input', () => {
+        number.value = slider.value;
+        post(parseFloat(slider.value));
+    });
+    number.addEventListener('change', () => {
+        const parsed = parseFloat(number.value);
+        if (Number.isFinite(parsed)) {
+            slider.value = parsed;
+            post(parsed);
+        }
+    });
+    stopwatch.addEventListener('click', () => {
+        if (stored.keys && stored.keys.length) {
+            host.post({
+                type: 'removeKeyframe',
+                layerId,
+                instanceId,
+                name: spec.name,
+                time: state.playhead
+            });
+        } else {
+            host.post({
+                type: 'setKeyframe',
+                layerId,
+                instanceId,
+                name: spec.name,
+                time: state.playhead,
+                value
+            });
+        }
+    });
+
+    row.appendChild(slider);
+    row.appendChild(number);
+    row.appendChild(stopwatch);
+
+    // The expression field, revealed on demand so it does not crowd the
+    // common case of a slider that is dragged.
+    const key = instanceId + '.' + spec.name;
+    const expression = effect && effect.expressions ? effect.expressions[spec.name] : null;
+    if (expression || state.expressionOpen.has(key)) {
+        const field = el('div', { className: 'param expression' });
+        const input = el('input', {
+            attrs: {
+                type: 'text',
+                placeholder: 'Expression, e.g. time * 100',
+                value: expression ? expression.source : ''
+            }
+        });
+        const hint = el('div', { className: 'hint' });
+        input.addEventListener('change', () => {
+            host.post({
+                type: 'setExpression',
+                layerId,
+                instanceId,
+                name: spec.name,
+                source: input.value
+            });
+        });
+        field.appendChild(input);
+        field.appendChild(hint);
+        row.appendChild(field);
+        row.style.gridTemplateRows = 'auto auto';
+        field.style.gridColumn = '1 / -1';
+    }
+
+    return row;
+}
+
+function toHex(r, g, b) {
+    const channel = value => Math.max(0, Math.min(255, Math.round(value * 255)))
+        .toString(16).padStart(2, '0');
+    return '#' + channel(r) + channel(g) + channel(b);
+}
+
+function fromHex(hex) {
+    const value = hex.replace('#', '');
+    return [
+        parseInt(value.slice(0, 2), 16) / 255,
+        parseInt(value.slice(2, 4), 16) / 255,
+        parseInt(value.slice(4, 6), 16) / 255
+    ];
+}
+
+// ===========================================================================
+// Titlebar, status, transport
+// ===========================================================================
+
+function renderTitlebar() {
+    const name = state.document && state.document.name ? state.document.name : 'Untitled';
+    $('project-name').textContent = name;
+    $('dirty-mark').textContent = state.dirty ? '•' : '';
+    $('btn-save').disabled = !state.dirty && !!state.projectPath;
+
+    const comp = composition();
+    if (comp) {
+        $('comp-label').textContent = comp.name || 'Composition';
+        $('comp-size').textContent = comp.width + ' × ' + comp.height
+            + '  ' + (comp.fpsNumerator / comp.fpsDenominator).toFixed(2) + ' fps';
+        $('scrub').max = comp.duration;
+        $('time-label').textContent = formatTime(state.playhead) + ' / ' + formatTime(comp.duration);
+    }
+}
+
+function setStatus(message, kind) {
+    const status = $('status');
+    status.textContent = message;
+    status.className = kind || '';
+}
+
+function setPlayhead(time) {
+    const comp = composition();
+    if (!comp) return;
+    state.playhead = Math.max(0, Math.min(comp.duration, time));
+    $('scrub').value = state.playhead;
+    $('time-label').textContent = formatTime(state.playhead) + ' / ' + formatTime(comp.duration);
+    $('playhead').style.left = (140 + state.playhead * pixelsPerSecond) + 'px';
+    host.post({ type: 'setPlayhead', time: state.playhead });
+    requestFrame();
+}
+
+function stepFrame(direction) {
+    const comp = composition();
+    if (!comp) return;
+    const rate = comp.fpsNumerator / comp.fpsDenominator;
+    setPlayhead(state.playhead + direction / rate);
+}
+
+// --- transport wiring ------------------------------------------------------
+
+$('btn-start').addEventListener('click', () => setPlayhead(0));
+$('btn-end').addEventListener('click', () => {
+    const comp = composition();
+    if (comp) setPlayhead(comp.duration);
+});
+$('btn-prev').addEventListener('click', () => stepFrame(-1));
+$('btn-next').addEventListener('click', () => stepFrame(1));
+
+$('scrub').addEventListener('input', () => setPlayhead(parseFloat($('scrub').value)));
+
+$('zoom-select').addEventListener('change', () => {
+    state.zoom = $('zoom-select').value;
+    resizeViewer();
+});
+
+// --- playback --------------------------------------------------------------
+
+let playbackHandle = null;
+let playbackLast = 0;
+
+function togglePlayback() {
+    state.playing = !state.playing;
+    $('btn-play').innerHTML = state.playing ? '&#10074;&#10074;' : '&#9654;';
+
+    if (!state.playing) {
+        if (playbackHandle) cancelAnimationFrame(playbackHandle);
+        playbackHandle = null;
+        return;
+    }
+
+    playbackLast = performance.now();
+    const tick = now => {
+        if (!state.playing) return;
+        const comp = composition();
+        if (!comp) return;
+
+        const elapsed = (now - playbackLast) / 1000;
+        playbackLast = now;
+
+        let next = state.playhead + elapsed;
+        if (next >= comp.duration) {
+            next = comp.duration;
+            state.playing = false;
+            $('btn-play').innerHTML = '&#9654;';
+        }
+        setPlayhead(next);
+        if (state.playing) playbackHandle = requestAnimationFrame(tick);
+    };
+    playbackHandle = requestAnimationFrame(tick);
+}
+
+$('btn-play').addEventListener('click', togglePlayback);
+
+// --- layer buttons ---------------------------------------------------------
+
+$('btn-add-solid').addEventListener('click', () =>
+    host.post({ type: 'addLayer', kind: 'solid' }));
+$('btn-add-text').addEventListener('click', () =>
+    host.post({ type: 'addLayer', kind: 'text' }));
+$('btn-add-shape').addEventListener('click', () =>
+    host.post({ type: 'addLayer', kind: 'shape' }));
+$('btn-add-adjustment').addEventListener('click', () =>
+    host.post({ type: 'addLayer', kind: 'adjustment' }));
+
+$('btn-delete-layer').addEventListener('click', () => {
+    if (!state.selectedLayerId) {
+        setStatus('Select a layer to delete.', 'error');
+        return;
+    }
+    host.post({ type: 'removeLayer', layerId: state.selectedLayerId });
+});
+
+$('btn-duplicate-layer').addEventListener('click', () => {
+    if (!state.selectedLayerId) {
+        setStatus('Select a layer to duplicate.', 'error');
+        return;
+    }
+    host.post({ type: 'duplicateLayer', layerId: state.selectedLayerId });
+});
+
+$('btn-reset-transform').addEventListener('click', () => {
+    if (!state.selectedLayerId) return;
+    host.post({ type: 'resetTransform', layerId: state.selectedLayerId });
+});
+
+// --- file buttons ----------------------------------------------------------
+
+$('btn-new').addEventListener('click', () => {
+    if (state.dirty && !confirm('Discard unsaved changes and start a new project?')) return;
+    host.post({ type: 'newProject' });
+});
+$('btn-open').addEventListener('click', () => host.post({ type: 'openProject' }));
+$('btn-save').addEventListener('click', () => host.post({ type: 'saveProject' }));
+$('btn-export').addEventListener('click', showExportDialog);
+
+// ===========================================================================
+// The export dialog
+// ===========================================================================
+
+function showExportDialog() {
+    const comp = composition();
+    if (!comp) return;
+
+    const backdrop = $('modal-backdrop');
+    const modal = $('modal');
+    modal.textContent = '';
+
+    modal.appendChild(el('div', { className: 'modal-head', text: 'Export' }));
+
+    const body = el('div', { className: 'modal-body' });
+
+    const outputField = el('div', { className: 'field' });
+    outputField.appendChild(el('label', { text: 'Output' }));
+    const outputInput = el('input', {
+        attrs: { type: 'text', placeholder: 'Choose a file…' }
+    });
+    const outputRow = el('div', { style: { display: 'flex', gap: '6px' } });
+    outputRow.appendChild(outputInput);
+    const browse = el('button', { className: 'btn', text: '…' });
+    browse.addEventListener('click', () => host.post({
+        type: 'pickExportPath',
+        current: outputInput.value
+    }));
+    outputRow.appendChild(browse);
+    outputField.appendChild(outputRow);
+    body.appendChild(outputField);
+
+    const codecField = el('div', { className: 'field' });
+    codecField.appendChild(el('label', { text: 'Video codec' }));
+    const codec = el('select');
+    for (const [id, label] of [
+        ['libx264', 'H.264 (CPU)'],
+        ['h264_nvenc', 'H.264 (NVIDIA)'],
+        ['h264_qsv', 'H.264 (Intel Quick Sync)'],
+        ['h264_amf', 'H.264 (AMD)'],
+        ['libx265', 'H.265 / HEVC (CPU)']
+    ]) {
+        const option = el('option', { text: label });
+        option.value = id;
+        codec.appendChild(option);
+    }
+    codecField.appendChild(codec);
+    body.appendChild(codecField);
+
+    const qualityField = el('div', { className: 'field' });
+    qualityField.appendChild(el('label', { text: 'Quality (CRF)' }));
+    const quality = el('input', {
+        attrs: { type: 'number', min: 0, max: 51, step: 1, value: 18 }
+    });
+    qualityField.appendChild(quality);
+    body.appendChild(qualityField);
+    body.appendChild(el('div', {
+        className: 'hint-text',
+        text: 'Lower is better quality and a larger file. 18 is visually lossless; '
+            + '23 is a good delivery default.'
+    }));
+
+    const sizeField = el('div', { className: 'field' });
+    sizeField.appendChild(el('label', { text: 'Size' }));
+    const widthInput = el('input', {
+        attrs: { type: 'number', min: 2, max: 16384, step: 2, value: comp.width }
+    });
+    const heightInput = el('input', {
+        attrs: { type: 'number', min: 2, max: 16384, step: 2, value: comp.height }
+    });
+    const sizeRow = el('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, [
+        widthInput, el('span', { text: '×' }), heightInput
+    ]);
+    sizeField.appendChild(sizeRow);
+    body.appendChild(sizeField);
+
+    modal.appendChild(body);
+
+    const foot = el('div', { className: 'modal-foot' });
+    const cancel = el('button', { className: 'btn', text: 'Cancel' });
+    cancel.addEventListener('click', () => backdrop.classList.remove('open'));
+    const start = el('button', { className: 'btn primary', text: 'Export' });
+    start.addEventListener('click', () => {
+        if (!outputInput.value) {
+            setStatus('Choose an output file first.', 'error');
+            return;
+        }
+        backdrop.classList.remove('open');
+        host.post({
+            type: 'startRender',
+            outputPath: outputInput.value,
+            videoCodec: codec.value,
+            quality: parseInt(quality.value, 10) || 18,
+            useBitrate: false,
+            resize: parseInt(widthInput.value, 10) !== comp.width
+                 || parseInt(heightInput.value, 10) !== comp.height,
+            width: parseInt(widthInput.value, 10) || comp.width,
+            height: parseInt(heightInput.value, 10) || comp.height
+        });
+    });
+    foot.appendChild(cancel);
+    foot.appendChild(start);
+    modal.appendChild(foot);
+
+    backdrop.classList.add('open');
+}
+
+// ===========================================================================
+// Progress
+// ===========================================================================
+
+function showProgress(frame, total, stage) {
+    $('progress').classList.add('open');
+    $('progress-label').textContent = stage || 'Rendering';
+    const fraction = total > 0 ? Math.min(1, frame / total) : 0;
+    $('progress-fill').style.width = (fraction * 100).toFixed(1) + '%';
+    $('progress-detail').textContent = total > 0
+        ? 'Frame ' + frame + ' of ' + total + '  (' + Math.round(fraction * 100) + '%)'
+        : '';
+}
+
+function hideProgress() { $('progress').classList.remove('open'); }
+
+$('btn-cancel-render').addEventListener('click', () => {
+    host.post({ type: 'cancelRender' });
+});
+
+// ===========================================================================
+// Keyboard
+// ===========================================================================
+
+document.addEventListener('keydown', event => {
+    // A field being edited owns its keys. Space in a text field is a space,
+    // not play.
+    const tag = event.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+        if (event.key === 'Escape') event.target.blur();
+        return;
+    }
+
+    const comp = composition();
+
+    if (event.key === ' ') {
+        event.preventDefault();
+        togglePlayback();
+    } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        stepFrame(event.shiftKey ? -10 : -1);
+    } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        stepFrame(event.shiftKey ? 10 : 1);
+    } else if (event.key === 'Home') {
+        setPlayhead(0);
+    } else if (event.key === 'End') {
+        if (comp) setPlayhead(comp.duration);
+    } else if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        host.post({ type: event.shiftKey ? 'redo' : 'undo' });
+    } else if (event.ctrlKey && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        host.post({ type: 'redo' });
+    } else if (event.ctrlKey && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        host.post({ type: 'saveProject' });
+    } else if (event.ctrlKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        host.post({ type: 'openProject' });
+    } else if (event.ctrlKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        host.post({ type: 'newProject' });
+    } else if (event.key === 'Delete' && state.selectedLayerId) {
+        host.post({ type: 'removeLayer', layerId: state.selectedLayerId });
+    }
+});
+
+// ===========================================================================
+// Render everything
+// ===========================================================================
+
+function renderAll() {
+    renderTitlebar();
+    renderLeftPanel();
+    renderTimeline();
+    renderInspector();
+    resizeViewer();
+}
+
+let resizeHandle = null;
+window.addEventListener('resize', () => {
+    if (resizeHandle) cancelAnimationFrame(resizeHandle);
+    resizeHandle = requestAnimationFrame(() => {
+        resizeViewer();
+        renderTimeline();
+    });
+});
+
+// ===========================================================================
+// Layout self-report
+// ===========================================================================
+
+/**
+ * Measure the interface's bands and report them.
+ *
+ * Every band is checked for the two failures that are invisible in a
+ * screenshot of a working window but obvious in a screenshot of a broken one:
+ * a band that collapsed to nothing, and a band pushed past the bottom of the
+ * viewport. The host prints the result on request, so a layout bug is a list
+ * of numbers rather than an afternoon of guessing.
+ */
+function reportLayout() {
+    const bands = [
+        ['titlebar', document.getElementById('titlebar')],
+        ['main', document.getElementById('main')],
+        ['statusbar', document.getElementById('statusbar')],
+        ['viewer', document.getElementById('viewer')],
+        ['canvas-wrap', document.getElementById('canvas-wrap')],
+        ['transport', document.getElementById('transport')],
+        ['timeline-panel', document.getElementById('timeline-panel')],
+        ['tracks', document.getElementById('tracks')],
+        ['left-body', document.getElementById('left-body')],
+        ['inspector', document.getElementById('inspector')]
+    ];
+
+    const viewportHeight = window.innerHeight;
+    const problems = [];
+    const rows = [];
+
+    for (const [name, node] of bands) {
+        if (!node) {
+            problems.push(name + ' is missing');
+            continue;
+        }
+        const rect = node.getBoundingClientRect();
+        rows.push({
+            name,
+            top: Math.round(rect.top),
+            height: Math.round(rect.height),
+            bottom: Math.round(rect.bottom)
+        });
+
+        // A band with no height is a band the user cannot use.
+        if (rect.height < 1) {
+            problems.push(name + ' has no height');
+        }
+        // A band past the bottom edge is unreachable: the window does not
+        // scroll, so nothing below the viewport can be clicked.
+        if (rect.bottom > viewportHeight + 1) {
+            problems.push(name + ' extends ' + Math.round(rect.bottom - viewportHeight)
+                          + 'px past the bottom of the window');
+        }
+    }
+
+    // The status bar must be the last thing on screen and must be visible:
+    // it is where every error message goes, so a status bar off-screen means
+    // errors are invisible.
+    const statusbar = document.getElementById('statusbar');
+    if (statusbar) {
+        const rect = statusbar.getBoundingClientRect();
+        if (rect.bottom > viewportHeight + 1) {
+            problems.push('the status bar is off-screen, so errors would be invisible');
+        }
+    }
+
+    return {
+        viewport: { width: window.innerWidth, height: viewportHeight },
+        bands: rows,
+        problems
+    };
+}
+
+window.__keyflowLayoutReport = reportLayout;
+
+// Tell the host the page is up. Nothing is sent to the page before this, so
+// without it the editor would sit empty with no indication of why.
+host.post({ type: 'ready' });
+
+// Report the driver string the host knows, once it has told us.
+window.addEventListener('load', () => {
+    host.post({ type: 'requestDriver' });
+
+    // Measure once the first layout has settled. A report taken before the
+    // first frame would measure bands that have not been sized yet.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        host.post({ type: 'layoutReport', report: reportLayout() });
+    }));
+});
+</script>
+</body>
+</html>
