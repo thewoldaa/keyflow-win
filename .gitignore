@@ -4,11 +4,17 @@
 # Never committed. A build directory carries absolute paths from the machine
 # that made it, so a checked-in one is worse than useless on another machine —
 # it configures and then fails in a way that looks like a source problem.
+#
+# Anchored to the repository root. A bare "lib/" would also match
+# scripts/harness/lib/, which is source: the harness's shared functions live
+# there, and excluding them produces a repository whose harness scripts cannot
+# find their own library. The symptom is "the property 'Count' cannot be found"
+# from a script that dot-sourced nothing.
 # ---------------------------------------------------------------------------
-build/
-out/
-bin/
-lib/
+/build/
+/out/
+/bin/
+/lib/
 *.exe
 *.dll
 *.lib
