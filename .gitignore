@@ -34,6 +34,14 @@
 third_party/
 
 # ---------------------------------------------------------------------------
+# The harness's worktrees.
+#
+# Each is a full checkout on its own branch. Committing one would embed a git
+# repository inside this one, and a clone would get a directory it cannot use.
+# ---------------------------------------------------------------------------
+.worktrees/
+
+# ---------------------------------------------------------------------------
 # Editor and IDE state.
 # ---------------------------------------------------------------------------
 .vs/
