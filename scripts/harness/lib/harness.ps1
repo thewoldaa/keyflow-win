@@ -138,6 +138,12 @@ See tasks/wave-0/core.md for a worked example.
 # Reads the lines under "## Territory" until the next "##" heading. Only lines
 # beginning with "- " are taken, and inline comments after " #" are stripped,
 # so the file stays readable.
+#
+# The result is wrapped in @() on the way out. PowerShell unwraps a
+# single-element collection to the element itself, so a task declaring one
+# path returns a string rather than a list of one — and a caller asking for
+# .Count on a string throws under Set-StrictMode. The wrapper makes the return
+# type a collection regardless of how many entries there are.
 function Get-HarnessTaskTerritory {
     param([string] $TaskFile)
 
@@ -155,7 +161,7 @@ function Get-HarnessTaskTerritory {
         }
     }
 
-    return $entries
+    return ,@($entries)
 }
 
 # --- territory validation --------------------------------------------------
