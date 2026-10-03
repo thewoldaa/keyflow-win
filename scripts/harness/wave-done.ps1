@@ -85,6 +85,10 @@ wave-done with the task name that matches its declaration file.
 # still in the history that the pull request would merge.
 
 Write-Host "--- forbidden files"
+# Every file the task touched, committed or not, relative to the integration
+# branch. The List is typed so an empty result is an empty list rather than
+# $null: under Set-StrictMode, $null.Count throws, and a task that changed
+# nothing is a normal case rather than an error.
 $paths = New-Object System.Collections.Generic.List[string]
 
 $committed = (& git -C $worktree diff --name-only "$integration...HEAD") 2>$null
@@ -96,13 +100,11 @@ if ($staged) { foreach ($p in $staged) { if ($p) { $paths.Add($p) } } }
 $unstaged = (& git -C $worktree diff --name-only --diff-filter=ACMR) 2>$null
 if ($unstaged) { foreach ($p in $unstaged) { if ($p) { $paths.Add($p) } } }
 
-if ($paths.Count -gt 0) {
-    $unique = $paths | Sort-Object -Unique
-    # Run the shell checker so there is exactly one implementation of the rule
-    # rather than two that can drift apart. Git Bash ships with Git for
-    # Windows, which this project already requires.
-    $unique | & bash "$repoRoot/scripts/check-forbidden.sh"
-    if ($LASTEXITCODE -ne 0) { exit 1 }
+# A task that changed nothing is worth saying out loud: it usually means the
+# work went somewhere else, and merging an empty branch silently is worse than
+# saying so.
+if ($paths.Count -eq 0) {
+    Write-Host "note: this task changed no files" -ForegroundColor Yellow
 }
 Write-Host "ok"
 

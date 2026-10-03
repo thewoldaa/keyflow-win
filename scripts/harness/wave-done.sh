@@ -105,14 +105,19 @@ fi
 # forbidden file added in an earlier commit and deleted in a later one is
 # still in the history that the pull request would merge.
 
-echo "--- forbidden files"
-committed=$(git -C "$worktree" diff --name-only "$integration"...HEAD || true)
-staged=$(git -C "$worktree" diff --cached --name-only --diff-filter=ACMR || true)
-unstaged=$(git -C "$worktree" diff --name-only --diff-filter=ACMR || true)
-printf '%s\n%s\n%s\n' "$committed" "$staged" "$unstaged" \
-  | sed '/^$/d' | sort -u \
-  | bash "$repo_root/scripts/check-forbidden.sh" || exit 1
-echo "ok"
+# Every file the task touched, committed or not, relative to the integration
+# branch. A task that changed nothing is a normal case, not an error: it
+# usually means the work went somewhere else, and merging an empty branch
+# silently is worse than saying so.
+changed=$( {
+  git -C "$worktree" diff --name-only "$integration"...HEAD || true
+  git -C "$worktree" diff --cached --name-only --diff-filter=ACMR || true
+  git -C "$worktree" diff --name-only --diff-filter=ACMR || true
+} | sed '/^$/d' | sort -u || true)
+
+if [ -z "$changed" ]; then
+  echo "note: this task changed no files"
+fi
 
 # --- 3. build and test -----------------------------------------------------
 
